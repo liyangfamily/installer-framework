@@ -1,0 +1,127 @@
+# Build Qt Installer Framework tools on branch 4.11 and publish releases.
+#
+# Triggers:
+#   - push to branch 4.11
+#   - push tag: 4.11.*
+#   - workflow_dispatch
+
+name: Build and Release IFW
+
+on:
+  push:
+    branches:
+      - "4.11"
+    tags:
+      - "4.11.*"
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create/update a GitHub Release for the given tag"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag (e.g. 4.11.1-axi1). Required when create_release=true"
+        type: string
+        default: ""
+
+concurrency:
+  group: ifw-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # IFW 4.11 needs Qt >= 6.6
+  QT_VERSION: "6.6.3"
+  IFW_VERSION: "4.11"
+
+jobs:
+  build-linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # install-qt-action/aqt 在 runner 默认 Python 3.15 上会失败，固定 3.12
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb-cursor0 \
+            libbz2-dev \
+            liblzma-dev \
+            zlib1g-dev \
+            libzstd-dev
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qt5compat
+          archives: qtbase qttools qtsvg
+          cache: true
+          setup-python: false
+          python-version: "3.12"
+
+      - name: Build IFW
+        run: |
+          set -euo pipefail
+          mkdir -p build && cd build
+          qmake ../installerfw.pro -r CONFIG+=release \
+            "IFW_BZIP2_LIBRARY=-lbz2" \
+            "IFW_LZMA_LIBRARY=-llzma"
+          make -j"$(nproc)"
+          ./bin/installerbase -v || true
+          ./bin/binarycreator -v || true
+
+      - name: Package tools
+        run: |
+          set -euo pipefail
+          OUT="ifw-${IFW_VERSION}-linux-x64"
+          mkdir -p "$OUT/bin"
+          cp -a build/bin/{archivegen,binarycreator,installerbase,repogen} "$OUT/bin/"
+          [ -x build/bin/devtool ] && cp -a build/bin/devtool "$OUT/bin/" || true
+          cat > "$OUT/README.txt" <<EOF
+          Qt Installer Framework ${IFW_VERSION} (linux-x64)
+          Built with Qt ${QT_VERSION}
+          Source: ${GITHUB_REPOSITORY}@${GITHUB_SHA}
+          Patch: FileDownloader DownloadType queued-invoke fix
+          EOF
+          tar -C . -czf "${OUT}.tar.gz" "$OUT"
+          ls -lh "${OUT}.tar.gz"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ifw-${{ env.IFW_VERSION }}-linux-x64
+          path: ifw-${{ env.IFW_VERSION }}-linux-x64.tar.gz
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          name: IFW ${{ env.IFW_VERSION }} (${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }})
+          body: |
+            Qt Installer Framework **${{ env.IFW_VERSION }}** tools (linux-x64).
+
+            - Built with Qt **${{ env.QT_VERSION }}**
+            - Includes fix for online package download hang (`DownloadType` metatype)
+            - Binaries: `archivegen`, `binarycreator`, `installerbase`, `repogen`
+          files: ifw-${{ env.IFW_VERSION }}-linux-x64.tar.gz
+          draft: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

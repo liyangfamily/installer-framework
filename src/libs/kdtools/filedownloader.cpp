@@ -157,7 +157,13 @@ void KDUpdater::FileDownloader::setPackageManagerCore(PackageManagerCore *core)
 
 void KDUpdater::FileDownloader::download(DownloadType downloadType)
 {
-    QMetaObject::invokeMethod(this, "doDownload", Qt::QueuedConnection, Q_ARG(DownloadType, downloadType));
+    // Queued Q_ARG(DownloadType) requires a registered metatype; 4.11 never registered it,
+    // so package downloads hang with:
+    //   QMetaMethod::invoke: Unable to handle unregistered datatype 'DownloadType'
+    // Use a functor so DownloadType does not need QMetaType registration.
+    QMetaObject::invokeMethod(this, [this, downloadType]() {
+        doDownload(downloadType);
+    }, Qt::QueuedConnection);
 }
 
 template <typename AbstractTask>
