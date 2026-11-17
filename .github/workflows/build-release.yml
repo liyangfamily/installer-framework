@@ -40,7 +40,7 @@ env:
   IFW_VERSION: "4.11"
   QT_PREFIX: /opt/qt-static-6.9.1
   # Bump when changing configure flags so the cache key invalidates.
-  QT_STATIC_CACHE_REV: "v1"
+  QT_STATIC_CACHE_REV: "v2"
 
 jobs:
   build-linux:
@@ -174,7 +174,7 @@ jobs:
             -no-cups \
             -no-sql-sqlite \
             -no-feature-gssapi \
-            -no-qml-debug \
+            -no-feature-qml-debug \
             -no-opengl \
             -no-egl \
             -no-sm \
