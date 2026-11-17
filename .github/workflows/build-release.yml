@@ -29,8 +29,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # 6.6.x 用 gcc_64；6.7+ 才是 linux_gcc_64（用错会报 qt_base/qt5compat not found）
   QT_VERSION: "6.6.3"
-  QT_ARCH: "linux_gcc_64"
+  QT_ARCH: "gcc_64"
   IFW_VERSION: "4.11"
   AQT_DIR: ${{ github.workspace }}/.aqt-qt
 
@@ -66,11 +67,13 @@ jobs:
           set -euo pipefail
           python -m pip install -U pip
           python -m pip install "aqtinstall==3.1.*"
+          python -m aqt list-qt linux desktop --arch "${QT_VERSION}"
+          python -m aqt list-qt linux desktop --modules "${QT_VERSION}" "${QT_ARCH}"
+          # 不要随便加 --archives：错误 arch 或精简包会导致 qt_base 解析失败
           python -m aqt install-qt linux desktop "${QT_VERSION}" "${QT_ARCH}" \
             -O "${AQT_DIR}" \
-            -m qt5compat \
-            --archives qtbase qttools qtsvg
-          QT_ROOT="${AQT_DIR}/${QT_VERSION}/gcc_64"
+            -m qt5compat
+          QT_ROOT="${AQT_DIR}/${QT_VERSION}/${QT_ARCH}"
           test -x "${QT_ROOT}/bin/qmake"
           echo "QT_ROOT=${QT_ROOT}" >> "$GITHUB_ENV"
           echo "${QT_ROOT}/bin" >> "$GITHUB_PATH"
