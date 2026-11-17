@@ -40,7 +40,7 @@ env:
   IFW_VERSION: "4.11"
   QT_PREFIX: /opt/qt-static-6.9.1
   # Bump when changing configure flags so the cache key invalidates.
-  QT_STATIC_CACHE_REV: "v2"
+  QT_STATIC_CACHE_REV: "v3"
 
 jobs:
   build-linux:
@@ -157,8 +157,13 @@ jobs:
             download_module "${module}"
           done
 
-          # Official Linux static configure options for IFW 4.11:
+          # IFW Linux static flags (docs still list -no-qml-debug):
           # https://doc.qt.io/qtinstallerframework/ifw-building-from-sources.html
+          #
+          # Qt 6.9.1 facts (verified against qtbase config_help.txt + qtdeclarative
+          # configure.cmake): qml-debug is a qtdeclarative feature only. It must NOT
+          # be passed to qtbase/configure (unknown feature). Disable it when running
+          # qt-configure-module on qtdeclarative instead.
           mkdir -p "$HOME/qt-build-qtbase"
           cd "$HOME/qt-build-qtbase"
           "${QT_SRC}/qtbase/configure" \
@@ -174,7 +179,6 @@ jobs:
             -no-cups \
             -no-sql-sqlite \
             -no-feature-gssapi \
-            -no-feature-qml-debug \
             -no-opengl \
             -no-egl \
             -no-sm \
@@ -197,7 +201,11 @@ jobs:
             rm -rf "${build_dir}"
             mkdir -p "${build_dir}"
             cd "${build_dir}"
-            "${QT_PREFIX}/bin/qt-configure-module" "${QT_SRC}/${module}"
+            extra_args=()
+            if [ "${module}" = "qtdeclarative" ]; then
+              extra_args+=(-no-feature-qml-debug)
+            fi
+            "${QT_PREFIX}/bin/qt-configure-module" "${QT_SRC}/${module}" "${extra_args[@]}"
             cmake --build . --parallel "$(nproc)"
             cmake --install .
           done
