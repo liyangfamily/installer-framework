@@ -29,9 +29,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # IFW 4.11 needs Qt >= 6.6
   QT_VERSION: "6.6.3"
+  QT_ARCH: "linux_gcc_64"
   IFW_VERSION: "4.11"
+  AQT_DIR: ${{ github.workspace }}/.aqt-qt
 
 jobs:
   build-linux:
@@ -41,7 +42,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # install-qt-action/aqt 在 runner 默认 Python 3.15 上会失败，固定 3.12
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -61,22 +61,26 @@ jobs:
             zlib1g-dev \
             libzstd-dev
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: desktop
-          arch: linux_gcc_64
-          modules: qt5compat
-          archives: qtbase qttools qtsvg
-          cache: true
-          setup-python: false
-          python-version: "3.12"
+      - name: Install Qt via aqtinstall
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip
+          python -m pip install "aqtinstall==3.1.*"
+          python -m aqt install-qt linux desktop "${QT_VERSION}" "${QT_ARCH}" \
+            -O "${AQT_DIR}" \
+            -m qt5compat \
+            --archives qtbase qttools qtsvg
+          QT_ROOT="${AQT_DIR}/${QT_VERSION}/gcc_64"
+          test -x "${QT_ROOT}/bin/qmake"
+          echo "QT_ROOT=${QT_ROOT}" >> "$GITHUB_ENV"
+          echo "${QT_ROOT}/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${QT_ROOT}/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Build IFW
         run: |
           set -euo pipefail
+          which qmake
+          qmake -v
           mkdir -p build && cd build
           qmake ../installerfw.pro -r CONFIG+=release \
             "IFW_BZIP2_LIBRARY=-lbz2" \
