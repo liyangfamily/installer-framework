@@ -29,11 +29,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 6.6.x 用 gcc_64；6.7+ 才是 linux_gcc_64（用错会报 qt_base/qt5compat not found）
-  QT_VERSION: "6.6.3"
-  QT_ARCH: "gcc_64"
+  # install-qt-action 默认 LTS；6.7+ 会自动选 linux_gcc_64，不必手搓 aqt arch
+  QT_VERSION: "6.8.3"
   IFW_VERSION: "4.11"
-  AQT_DIR: ${{ github.workspace }}/.aqt-qt
 
 jobs:
   build-linux:
@@ -42,11 +40,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Install system deps
         run: |
@@ -62,35 +55,33 @@ jobs:
             zlib1g-dev \
             libzstd-dev
 
-      - name: Install Qt via aqtinstall
-        run: |
-          set -euo pipefail
-          python -m pip install -U pip
-          python -m pip install "aqtinstall==3.1.*"
-          python -m aqt list-qt linux desktop --arch "${QT_VERSION}"
-          python -m aqt list-qt linux desktop --modules "${QT_VERSION}" "${QT_ARCH}"
-          # 不要随便加 --archives：错误 arch 或精简包会导致 qt_base 解析失败
-          python -m aqt install-qt linux desktop "${QT_VERSION}" "${QT_ARCH}" \
-            -O "${AQT_DIR}" \
-            -m qt5compat
-          QT_ROOT="${AQT_DIR}/${QT_VERSION}/${QT_ARCH}"
-          test -x "${QT_ROOT}/bin/qmake"
-          echo "QT_ROOT=${QT_ROOT}" >> "$GITHUB_ENV"
-          echo "${QT_ROOT}/bin" >> "$GITHUB_PATH"
-          echo "LD_LIBRARY_PATH=${QT_ROOT}/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+      # 社区标准做法：jurplel/install-qt-action（内部仍用 aqt，但 arch/模块/缓存/PATH 都帮你处理好）
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          target: desktop
+          modules: qt5compat
+          cache: true
+          cache-key-prefix: ifw-qt-${{ env.QT_VERSION }}-linux
+          install-deps: true
 
       - name: Build IFW
         run: |
           set -euo pipefail
+          echo "QT_ROOT_DIR=${QT_ROOT_DIR:-}"
           which qmake
           qmake -v
           mkdir -p build && cd build
           qmake ../installerfw.pro -r CONFIG+=release \
             "IFW_BZIP2_LIBRARY=-lbz2" \
             "IFW_LZMA_LIBRARY=-llzma"
+          # 确认最终链接会带上 Core5Compat（shared Qt 必需）
+          grep -R -n 'Core5Compat\|core5compat' Makefile src/sdk/Makefile 2>/dev/null | head -20 || true
           make -j"$(nproc)"
           ./bin/installerbase -v || true
           ./bin/binarycreator -v || true
+          ls -lh bin/
 
       - name: Package tools
         run: |
@@ -101,9 +92,10 @@ jobs:
           [ -x build/bin/devtool ] && cp -a build/bin/devtool "$OUT/bin/" || true
           cat > "$OUT/README.txt" <<EOF
           Qt Installer Framework ${IFW_VERSION} (linux-x64)
-          Built with Qt ${QT_VERSION}
+          Built with Qt ${QT_VERSION} (shared, via jurplel/install-qt-action)
           Source: ${GITHUB_REPOSITORY}@${GITHUB_SHA}
           Patch: FileDownloader DownloadType queued-invoke fix
+          Note: runtime needs matching Qt libs, or run via LD_LIBRARY_PATH to QT_ROOT_DIR/lib
           EOF
           tar -C . -czf "${OUT}.tar.gz" "$OUT"
           ls -lh "${OUT}.tar.gz"
@@ -124,7 +116,7 @@ jobs:
           body: |
             Qt Installer Framework **${{ env.IFW_VERSION }}** tools (linux-x64).
 
-            - Built with Qt **${{ env.QT_VERSION }}**
+            - Built with Qt **${{ env.QT_VERSION }}** via `jurplel/install-qt-action`
             - Includes fix for online package download hang (`DownloadType` metatype)
             - Binaries: `archivegen`, `binarycreator`, `installerbase`, `repogen`
           files: ifw-${{ env.IFW_VERSION }}-linux-x64.tar.gz

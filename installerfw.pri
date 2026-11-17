@@ -131,10 +131,12 @@ macx:LIBS += -framework Carbon -framework Security
 }
 
 QT += uitools core-private
+# aqt / install-qt-action 默认是 shared Qt；静态库 libinstaller 里的 QTextCodec
+# 符号必须在最终可执行文件链接时带上 Core5Compat（不能只写在 static 分支里）。
+greaterThan(QT_MAJOR_VERSION, 5): QT += core5compat
 CONFIG(static, static|shared) {
     win32:lessThan(QT_MAJOR_VERSION, 6):QT += winextras
     QT += concurrent network qml xml
-    greaterThan(QT_MAJOR_VERSION, 5):QT += core5compat
 }
 CONFIG += depend_includepath no_private_qt_headers_warning
 versionAtLeast(QT_MAJOR_VERSION, 6) {
