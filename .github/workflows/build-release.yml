@@ -118,19 +118,38 @@ jobs:
             qt5compat
             qttranslations
           )
-          BASE="https://download.qt.io/official_releases/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
-          MIRROR="https://mirrors.ocf.berkeley.edu/qt/official_releases/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+          # 6.9.1 is under archive/ (not official_releases/). Try several mirrors.
+          MIRRORS=(
+            "https://download.qt.io/archive/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+            "https://qt.mirror.constant.com/archive/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+            "https://ftp.fau.de/qtproject/archive/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+            "https://ftp.jaist.ac.jp/pub/qtproject/archive/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+            "https://mirror.accum.se/mirror/qt.io/qtproject/archive/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+          )
 
           download_module() {
             local module="$1"
             local archive="${module}-everywhere-src-${QT_VERSION}.tar.xz"
+            local out="${QT_SRC}/${archive}"
+            local ok=0
             echo "Downloading ${archive} ..."
-            if ! wget -q -O "${QT_SRC}/${archive}" "${BASE}/${archive}"; then
-              echo "Primary mirror failed, trying Berkeley mirror ..."
-              wget -q -O "${QT_SRC}/${archive}" "${MIRROR}/${archive}"
+            for base in "${MIRRORS[@]}"; do
+              echo "  try ${base}/${archive}"
+              if wget --tries=3 --timeout=60 -O "${out}" "${base}/${archive}"; then
+                # Reject tiny/HTML error pages.
+                if [ "$(stat -c%s "${out}")" -gt 100000 ]; then
+                  ok=1
+                  break
+                fi
+              fi
+              rm -f "${out}"
+            done
+            if [ "${ok}" -ne 1 ]; then
+              echo "::error::Failed to download ${archive} from all mirrors"
+              exit 1
             fi
-            tar -C "${QT_SRC}" -xf "${QT_SRC}/${archive}"
-            rm -f "${QT_SRC}/${archive}"
+            tar -C "${QT_SRC}" -xf "${out}"
+            rm -f "${out}"
             mv "${QT_SRC}/${module}-everywhere-src-${QT_VERSION}" "${QT_SRC}/${module}"
           }
 
