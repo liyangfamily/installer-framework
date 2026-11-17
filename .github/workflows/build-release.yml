@@ -1,9 +1,12 @@
-# Build Qt Installer Framework tools on branch 4.11 and publish releases.
+# Build Qt Installer Framework 4.11 tools with officially recommended static Qt.
+#
+# Docs: https://doc.qt.io/qtinstallerframework/ifw-building-from-sources.html
+# Supported Qt for IFW 4.11: 6.9.1 (static advised so tools ship as single binaries).
 #
 # Triggers:
-#   - push to branch 4.11
-#   - push tag: 4.11.*
-#   - workflow_dispatch
+# - push to branch 4.11
+# - push tag: 4.11.*
+# - workflow_dispatch
 
 name: Build and Release IFW
 
@@ -23,65 +26,200 @@ on:
         description: "Release tag (e.g. 4.11.1-axi1). Required when create_release=true"
         type: string
         default: ""
+      force_rebuild_qt:
+        description: "Ignore static Qt cache and rebuild Qt from source"
+        type: boolean
+        default: false
 
 concurrency:
   group: ifw-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # install-qt-action 默认 LTS；6.7+ 会自动选 linux_gcc_64，不必手搓 aqt arch
-  QT_VERSION: "6.8.3"
+  QT_VERSION: "6.9.1"
   IFW_VERSION: "4.11"
+  QT_PREFIX: /opt/qt-static-6.9.1
+  # Bump when changing configure flags so the cache key invalidates.
+  QT_STATIC_CACHE_REV: "v1"
 
 jobs:
   build-linux:
-    name: Linux x64
+    name: Linux x64 (static Qt)
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
     steps:
-      - name: Checkout
+      - name: Checkout IFW
         uses: actions/checkout@v4
 
       - name: Install system deps
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            libgl1-mesa-dev \
+            cmake \
+            ninja-build \
+            perl \
+            python3 \
+            git \
+            wget \
+            xz-utils \
+            pkg-config \
+            libssl-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-cursor-dev \
+            libxcb-glx0-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render-util0-dev \
+            libxcb-shape0-dev \
+            libxcb-shm0-dev \
+            libxcb-sync-dev \
+            libxcb-xfixes0-dev \
+            libxcb-xinerama0-dev \
+            libxcb-xkb-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
-            libxcb-cursor0 \
             libbz2-dev \
             liblzma-dev \
             zlib1g-dev \
             libzstd-dev
 
-      # 社区标准做法：jurplel/install-qt-action（内部仍用 aqt，但 arch/模块/缓存/PATH 都帮你处理好）
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Cache static Qt
+        id: qt-cache
+        uses: actions/cache@v4
         with:
-          version: ${{ env.QT_VERSION }}
-          target: desktop
-          modules: qt5compat
-          cache: true
-          cache-key-prefix: ifw-qt-${{ env.QT_VERSION }}-linux
-          install-deps: true
+          path: ${{ env.QT_PREFIX }}
+          key: qt-static-${{ runner.os }}-${{ env.QT_VERSION }}-${{ env.QT_STATIC_CACHE_REV }}
 
-      - name: Build IFW
+      - name: Build static Qt ${{ env.QT_VERSION }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild_qt || steps.qt-cache.outputs.cache-hit != 'true' }}
         run: |
           set -euo pipefail
-          echo "QT_ROOT_DIR=${QT_ROOT_DIR:-}"
+          QT_SRC="$HOME/qt-src-${QT_VERSION}"
+          rm -rf "$QT_SRC" "${QT_PREFIX}"
+          mkdir -p "$QT_SRC"
+          sudo mkdir -p "${QT_PREFIX}"
+          sudo chown "$(id -u):$(id -g)" "${QT_PREFIX}"
+
+          # Official IFW module subset (+ qtshadertools required by qtdeclarative).
+          MODULES=(
+            qtbase
+            qtshadertools
+            qtdeclarative
+            qttools
+            qt5compat
+            qttranslations
+          )
+          BASE="https://download.qt.io/official_releases/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+          MIRROR="https://mirrors.ocf.berkeley.edu/qt/official_releases/qt/${QT_VERSION%.*}/${QT_VERSION}/submodules"
+
+          download_module() {
+            local module="$1"
+            local archive="${module}-everywhere-src-${QT_VERSION}.tar.xz"
+            echo "Downloading ${archive} ..."
+            if ! wget -q -O "${QT_SRC}/${archive}" "${BASE}/${archive}"; then
+              echo "Primary mirror failed, trying Berkeley mirror ..."
+              wget -q -O "${QT_SRC}/${archive}" "${MIRROR}/${archive}"
+            fi
+            tar -C "${QT_SRC}" -xf "${QT_SRC}/${archive}"
+            rm -f "${QT_SRC}/${archive}"
+            mv "${QT_SRC}/${module}-everywhere-src-${QT_VERSION}" "${QT_SRC}/${module}"
+          }
+
+          for module in "${MODULES[@]}"; do
+            download_module "${module}"
+          done
+
+          # Official Linux static configure options for IFW 4.11:
+          # https://doc.qt.io/qtinstallerframework/ifw-building-from-sources.html
+          mkdir -p "$HOME/qt-build-qtbase"
+          cd "$HOME/qt-build-qtbase"
+          "${QT_SRC}/qtbase/configure" \
+            -prefix "${QT_PREFIX}" \
+            -release \
+            -static \
+            -accessibility \
+            -qt-zlib \
+            -qt-libpng \
+            -qt-libjpeg \
+            -qt-pcre \
+            -no-glib \
+            -no-cups \
+            -no-sql-sqlite \
+            -no-feature-gssapi \
+            -no-qml-debug \
+            -no-opengl \
+            -no-egl \
+            -no-sm \
+            -no-icu \
+            -nomake examples \
+            -nomake tests \
+            -no-libudev \
+            -bundled-xcb-xinput \
+            -qt-harfbuzz \
+            -qt-doubleconversion \
+            -cmake-generator Ninja
+
+          cmake --build . --parallel "$(nproc)"
+          cmake --install .
+
+          # Remaining modules against the installed static prefix.
+          for module in qtshadertools qtdeclarative qttools qt5compat qttranslations; do
+            echo "==== Building ${module} ===="
+            build_dir="$HOME/qt-build-${module}"
+            rm -rf "${build_dir}"
+            mkdir -p "${build_dir}"
+            cd "${build_dir}"
+            "${QT_PREFIX}/bin/qt-configure-module" "${QT_SRC}/${module}"
+            cmake --build . --parallel "$(nproc)"
+            cmake --install .
+          done
+
+          "${QT_PREFIX}/bin/qmake" -v
+          test -f "${QT_PREFIX}/lib/libQt6Core.a"
+          test -f "${QT_PREFIX}/lib/libQt6Core5Compat.a"
+          echo "Static Qt installed at ${QT_PREFIX}"
+
+      - name: Verify static Qt
+        run: |
+          set -euo pipefail
+          test -x "${QT_PREFIX}/bin/qmake"
+          "${QT_PREFIX}/bin/qmake" -v
+          test -f "${QT_PREFIX}/lib/libQt6Core.a"
+          test -f "${QT_PREFIX}/lib/libQt6Core5Compat.a"
+          if ls "${QT_PREFIX}/lib"/libQt6Core.so* >/dev/null 2>&1; then
+            echo "::error::Found shared libQt6Core.so — expected static Qt only"
+            exit 1
+          fi
+
+      - name: Build IFW (static)
+        run: |
+          set -euo pipefail
+          export PATH="${QT_PREFIX}/bin:${PATH}"
           which qmake
           qmake -v
           mkdir -p build && cd build
           qmake ../installerfw.pro -r CONFIG+=release \
             "IFW_BZIP2_LIBRARY=-lbz2" \
             "IFW_LZMA_LIBRARY=-llzma"
-          # 确认最终链接会带上 Core5Compat（shared Qt 必需）
-          grep -R -n 'Core5Compat\|core5compat' Makefile src/sdk/Makefile 2>/dev/null | head -20 || true
           make -j"$(nproc)"
           ./bin/installerbase -v || true
           ./bin/binarycreator -v || true
           ls -lh bin/
+          echo "==== binarycreator linkage (must not depend on libQt6*.so) ===="
+          ldd ./bin/binarycreator || true
+          if ldd ./bin/binarycreator | grep -E 'libQt6.*\.so'; then
+            echo "::error::binarycreator still links shared Qt6 — static build failed"
+            exit 1
+          fi
 
       - name: Package tools
         run: |
@@ -92,13 +230,18 @@ jobs:
           [ -x build/bin/devtool ] && cp -a build/bin/devtool "$OUT/bin/" || true
           cat > "$OUT/README.txt" <<EOF
           Qt Installer Framework ${IFW_VERSION} (linux-x64)
-          Built with Qt ${QT_VERSION} (shared, via jurplel/install-qt-action)
+          Built with Qt ${QT_VERSION} (static, official IFW configure flags)
           Source: ${GITHUB_REPOSITORY}@${GITHUB_SHA}
           Patch: FileDownloader DownloadType queued-invoke fix
-          Note: runtime needs matching Qt libs, or run via LD_LIBRARY_PATH to QT_ROOT_DIR/lib
+          Runtime: no Qt shared libraries required; system XCB/OpenSSL may still be needed.
           EOF
+          sed -i 's/^          //' "$OUT/README.txt"
           tar -C . -czf "${OUT}.tar.gz" "$OUT"
           ls -lh "${OUT}.tar.gz"
+          SIZE_BYTES=$(stat -c%s "${OUT}.tar.gz")
+          if [ "$SIZE_BYTES" -lt 15000000 ]; then
+            echo "::warning::Artifact looks unusually small (${SIZE_BYTES} bytes) for a static IFW build"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -116,9 +259,10 @@ jobs:
           body: |
             Qt Installer Framework **${{ env.IFW_VERSION }}** tools (linux-x64).
 
-            - Built with Qt **${{ env.QT_VERSION }}** via `jurplel/install-qt-action`
+            - Built with **static Qt ${{ env.QT_VERSION }}** (official IFW Linux configure flags)
             - Includes fix for online package download hang (`DownloadType` metatype)
             - Binaries: `archivegen`, `binarycreator`, `installerbase`, `repogen`
+            - No Qt shared libraries required at runtime
           files: ifw-${{ env.IFW_VERSION }}-linux-x64.tar.gz
           draft: false
           generate_release_notes: false
